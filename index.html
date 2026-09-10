@@ -1,869 +1,420 @@
-1import React, { useState, useEffect, useRef, useCallback } from 'react';
-2import { generateSong, writeLyrics, splitStems, coverSong, generateImage } from '@flowmusic/sdk';
-3import type { Clip, SplitStemsResult } from '@flowmusic/sdk';
-4import {
-5  Music, Sparkles, Disc, FileText, AlertCircle, RefreshCw, CreditCard,
-6  ShieldCheck, Scissors, Layers, Image as ImageIcon, Radio, Code, Check, Copy
-7} from 'lucide-react';
-8
-9import { DAWTab, TrackConfig, Pattern, PlaylistClip, FXSettings } from './types';
-10import { audioEngine } from './audioEngine';
-11import { Header } from './Header';
-12import { StepSequencer } from './StepSequencer';
-13import { Playlist } from './Playlist';
-14import { Mixer } from './Mixer';
-15import { SynthPanel } from './SynthPanel';
-16import { Visualizer } from './Visualizer';
-17
-18const initialTracks: TrackConfig[] = [
-19  {
-20    id: 'track_kick',
-21    name: 'Kick 808',
-22    type: 'drum',
-23    soundType: 'kick',
-24    color: '#f97316',
-25    volume: 0.9,
-26    pan: 0,
-27    muted: false,
-28    soloed: false,
-29    steps: [true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false],
-30    velocities: Array(16).fill(1.0),
-31  },
-32  {
-33    id: 'track_snare',
-34    name: 'Snare Clap',
-35    type: 'drum',
-36    soundType: 'snare',
-37    color: '#f59e0b',
-38    volume: 0.8,
-39    pan: 0,
-40    muted: false,
-41    soloed: false,
-42    steps: [false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false],
-43    velocities: Array(16).fill(1.0),
-44  },
-45  {
-46    id: 'track_hihat',
-47    name: 'HiHat Trap',
-48    type: 'drum',
-49    soundType: 'hihat',
-50    color: '#eab308',
-51    volume: 0.65,
-52    pan: 0.1,
-53    muted: false,
-54    soloed: false,
-55    steps: [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true],
-56    velocities: Array(16).fill(0.8),
-57  },
-58  {
-59    id: 'track_bass',
-60    name: 'Sub Bass',
-61    type: 'synth',
-62    soundType: 'bass',
-63    color: '#3b82f6',
-64    volume: 0.85,
-65    pan: 0,
-66    muted: false,
-67    soloed: false,
-68    steps: [true, false, false, true, false, false, true, false, false, true, false, false, true, false, false, false],
-69    velocities: Array(16).fill(1.0),
-70    waveform: 'sawtooth',
-71    cutoff: 800,
-72    resonance: 3,
-73    attack: 0.01,
-74    release: 0.3,
-75  },
-76  {
-77    id: 'track_lead',
-78    name: 'Oriental Lead',
-79    type: 'synth',
-80    soundType: 'lead',
-81    color: '#ec4899',
-82    volume: 0.75,
-83    pan: -0.1,
-84    muted: false,
-85    soloed: false,
-86    steps: [false, false, true, false, false, true, false, false, true, false, false, true, false, false, true, false],
-87    velocities: Array(16).fill(1.0),
-88    waveform: 'square',
-89    cutoff: 3500,
-90    resonance: 1.5,
-91    attack: 0.02,
-92    release: 0.25,
-93  },
-94];
-95
-96export default function Component() {
-97  // Website Tab & Navigation
-98  const [activeTab, setActiveTab] = useState<DAWTab>('ai_studio');
-99
-100  // DAW State
-101  const [tracks, setTracks] = useState<TrackConfig[]>(initialTracks);
-102  const [selectedTrackId, setSelectedTrackId] = useState<string>('track_kick');
-103  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-104  const [bpm, setBpm] = useState<number>(120);
-105  const [currentStep, setCurrentStep] = useState<number>(0);
-106  const [masterVolume, setMasterVolume] = useState<number>(0.8);
-107  const [isSongMode, setIsSongMode] = useState<boolean>(false);
-108
-109  const [patterns] = useState<Pattern[]>([
-110    { id: 'pat_1', name: 'Pattern 1', color: '#f97316', notes: {}, drumSteps: {} },
-111  ]);
-112  const [playlistClips, setPlaylistClips] = useState<PlaylistClip[]>([
-113    { id: 'clip_1', patternId: 'pat_1', trackIndex: 0, startBar: 0, lengthBars: 1 },
-114    { id: 'clip_2', patternId: 'pat_1', trackIndex: 0, startBar: 1, lengthBars: 1 },
-115  ]);
-116  const [trackFX, setTrackFX] = useState<Record<string, FXSettings>>({});
-117
-118  // AI Music & Cover State
-119  const [prompt, setPrompt] = useState('إيقاع لو-فاي هادئ مع بيانو شرقي وناي');
-120  const [useCustomLyrics, setUseCustomLyrics] = useState(false);
-121  const [lyricsText, setLyricsText] = useState('');
-122  const [lyricsPrompt, setLyricsPrompt] = useState('أغنية هادئة عن النجاح والأمل');
-123
-124  const [imagePrompt, setImagePrompt] = useState('غلاف ألبوم موسيقي شرقي حديث مع أضواء نيون ورسومات سينمائية');
-125  const [generatingImage, setGeneratingImage] = useState(false);
-126  const [generatedImages, setGeneratedImages] = useState<string[]>([]);
-127
-128  const [loading, setLoading] = useState(false);
-129  const [writingLyrics, setWritingLyrics] = useState(false);
-130  const [processingId, setProcessingId] = useState<string | null>(null);
-131  const [statusMessage, setStatusMessage] = useState('');
-132  const [error, setError] = useState<string | null>(null);
-133
-134  const [generatedSongs, setGeneratedSongs] = useState<Clip[]>([]);
-135  const [stemsMap, setStemsMap] = useState<Record<string, SplitStemsResult>>({});
-136
-137  // Subscription State & HTML Export Modal State
-138  const [plan, setPlan] = useState<'monthly' | 'yearly'>('yearly');
-139  const [showPaymentModal, setShowPaymentModal] = useState(false);
-140  const [showHTMLModal, setShowHTMLModal] = useState(false);
-141  const [copiedHTML, setCopiedHTML] = useState(false);
-142
-143  const timerRef = useRef<number | null>(null);
-144  const currentStepRef = useRef<number>(0);
-145
-146  // Audio Playback Tick
-147  const handleStepTick = useCallback(() => {
-148    const step = currentStepRef.current;
-149    setCurrentStep(step);
-150
-151    tracks.forEach((track) => {
-152      if (track.muted) return;
-153      if (track.steps[step]) {
-154        if (track.type === 'drum') {
-155          audioEngine.triggerDrum(track, 0, track.velocities[step] || 1.0);
-156        } else {
-157          const midiNote = track.soundType === 'bass' ? 36 : 60;
-158          audioEngine.triggerSynth(track, midiNote, 0.2, 0, track.velocities[step] || 1.0);
-159        }
-160      }
-161    });
-162
-163    currentStepRef.current = (step + 1) % 16;
-164  }, [tracks]);
-165
-166  useEffect(() => {
-167    if (isPlaying) {
-168      const intervalMs = (60 / bpm / 4) * 1000;
-169      const intervalId = window.setInterval(handleStepTick, intervalMs);
-170      timerRef.current = intervalId;
-171      return () => {
-172        window.clearInterval(intervalId);
-173      };
-174    } else {
-175      if (timerRef.current !== null) {
-176        window.clearInterval(timerRef.current);
-177        timerRef.current = null;
-178      }
-179    }
-180  }, [isPlaying, bpm, handleStepTick]);
-181
-182  const handleTogglePlay = () => {
-183    if (!isPlaying) {
-184      audioEngine.init();
-185      audioEngine.resume();
-186    }
-187    setIsPlaying(!isPlaying);
-188  };
-189
-190  const handleStop = () => {
-191    setIsPlaying(false);
-192    currentStepRef.current = 0;
-193    setCurrentStep(0);
-194  };
-195
-196  const handleMasterVolumeChange = (vol: number) => {
-197    setMasterVolume(vol);
-198    audioEngine.setMasterVolume(vol);
-199  };
-200
-201  const handleToggleStep = (trackId: string, stepIndex: number) => {
-202    setTracks((prev) =>
-203      prev.map((t) => {
-204        if (t.id === trackId) {
-205          const newSteps = [...t.steps];
-206          newSteps[stepIndex] = !newSteps[stepIndex];
-207          return { ...t, steps: newSteps };
-208        }
-209        return t;
-210      })
-211    );
-212  };
-213
-214  const handleUpdateTrack = (trackId: string, updates: Partial<TrackConfig>) => {
-215    setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, ...updates } : t)));
-216  };
-217
-218  const handleUpdateFX = (trackId: string, fxUpdates: Partial<FXSettings>) => {
-219    setTrackFX((prev) => {
-220      const current = prev[trackId] || {
-221        eqLow: 0, eqMid: 0, eqHigh: 0,
-222        reverbMix: 0.1, delayTime: 0.25, delayFeedback: 0.2,
-223        filterCutoff: 18000, filterRes: 1,
-224      };
-225      const updated = { ...current, ...fxUpdates };
-226      audioEngine.updateTrackFX(
-227        trackId,
-228        tracks.find((t) => t.id === trackId)?.volume ?? 0.8,
-229        tracks.find((t) => t.id === trackId)?.pan ?? 0,
-230        tracks.find((t) => t.id === trackId)?.muted ?? false,
-231        updated
-232      );
-233      return { ...prev, [trackId]: updated };
-234    });
-235  };
-236
-237  const handleWriteLyrics = async () => {
-238    if (!lyricsPrompt.trim()) return;
-239    setWritingLyrics(true);
-240    setError(null);
-241    try {
-242      const res = await writeLyrics({ prompt: lyricsPrompt });
-243      setLyricsText(res.lyrics);
-244      if (res.soundPrompt) {
-245        setPrompt(res.soundPrompt);
-246      }
-247      setUseCustomLyrics(true);
-248    } catch (err) {
-249      setError(err instanceof Error ? err.message : 'فشل كتابة الكلمات');
-250    } finally {
-251      setWritingLyrics(false);
-252    }
-253  };
-254
-255  const handleGenerateImage = async () => {
-256    if (!imagePrompt.trim()) return;
-257    setGeneratingImage(true);
-258    setError(null);
-259    try {
-260      const res = await generateImage({
-261        prompt: imagePrompt,
-262        aspectRatio: '1:1',
-263      });
-264      setGeneratedImages((prev) => [res.imageUrl, ...prev]);
-265    } catch (err) {
-266      setError(err instanceof Error ? err.message : 'فشل توليد الصورة');
-267    } finally {
-268      setGeneratingImage(false);
-269    }
-270  };
-271
-272  const handleGenerateSong = async () => {
-273    if (!prompt.trim()) return;
-274    setLoading(true);
-275    setError(null);
-276    setStatusMessage('جاري توليد الموسيقى بالذكاء الاصطناعي...');
-277
-278    const runGen = async (retry = 0): Promise<Clip> => {
-279      try {
-280        return await generateSong({
-281          soundPrompt: prompt,
-282          lyrics: useCustomLyrics ? lyricsText : undefined,
-283        });
-284      } catch (err: unknown) {
-285        const errObj = err as { code?: string; message?: string };
-286        if (errObj.code !== 'moderation' && errObj.code !== 'rateLimit' && retry < 1) {
-287          setStatusMessage('إعادة المحاولة لتوليد أضخم جودة صوتية...');
-288          return await runGen(retry + 1);
-289        }
-290        throw err;
-291      }
-292    };
-293
-294    try {
-295      const clip = await runGen();
-296      setGeneratedSongs((prev) => [clip, ...prev]);
-297    } catch (err: unknown) {
-298      const errObj = err as { message?: string };
-299      setError(errObj.message || 'حدث خطأ أثناء توليد الموسيقى');
-300    } finally {
-301      setLoading(false);
-302      setStatusMessage('');
-303    }
-304  };
-305
-306  const handleSplitStems = async (clipId: string) => {
-307    setProcessingId(clipId);
-308    setStatusMessage('جاري فصل المسارات الصوتية (Vocals / Drums / Bass)...');
-309    try {
-310      const stems = await splitStems({ clipId });
-311      setStemsMap((prev) => ({ ...prev, [clipId]: stems }));
-312    } catch (err) {
-313      setError(err instanceof Error ? err.message : 'فشل فصل المسارات');
-314    } finally {
-315      setProcessingId(null);
-316      setStatusMessage('');
-317    }
-318  };
-319
-320  const handleCoverSong = async (clipId: string) => {
-321    setProcessingId(clipId);
-322    setStatusMessage('جاري إعادة التوزيع الموسيقي بأسلوب جديد...');
-323    try {
-324      const newCover = await coverSong({
-325        clipId,
-326        instruction: 'إعادة توزيع باحترافية وتطوير الإيقاع',
-327        strength: 0.6,
-328      });
-329      setGeneratedSongs((prev) => [newCover, ...prev]);
-330    } catch (err) {
-331      setError(err instanceof Error ? err.message : 'فشل إعادة التوزيع');
-332    } finally {
-333      setProcessingId(null);
-334      setStatusMessage('');
-335    }
-336  };
-337
-338  const standaloneHTMLCode = `<!DOCTYPE html>
-339<html lang="ar" dir="rtl">
-340<head>
-341  <meta charset="UTF-8" />
-342  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-343  <title>Salh Alheib Klel Studio - AI Web Music Studio</title>
-344  <!-- Tailwind CSS & React CDN -->
-345  <script src="https://cdn.tailwindcss.com"></script>
-346  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-347  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-348  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-349  <style>
-350    body { background-color: #0a0a0a; color: #f5f5f5; font-family: system-ui, -apple-system, sans-serif; }
-351  </style>
-352</head>
-353<body class="select-none min-h-screen">
-354  <div id="root"></div>
-355
-356  <script type="text/babel">
-357    const { useState, useEffect, useRef } = React;
-358
-359    function WebStudioApp() {
-360      const [isPlaying, setIsPlaying] = useState(false);
-361      const [bpm, setBpm] = useState(120);
-362      const [steps, setSteps] = useState([true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false]);
-363
-364      return (
-365        <div className="min-h-screen p-6 max-w-5xl mx-auto flex flex-col gap-6">
-366          <header className="bg-neutral-900 p-4 rounded-2xl border border-neutral-800 flex items-center justify-between">
-367            <h1 className="text-lg font-black text-orange-400">Salh Alheib Klel Studio - Web DAW</h1>
-368            <button 
-369              onClick={() => setIsPlaying(!isPlaying)}
-370              className="px-6 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-neutral-950 font-extrabold rounded-xl"
-371            >
-372              {isPlaying ? 'إيقاف' : 'تشغيل الإيقاع'}
-373            </button>
-374          </header>
-375
-376          <main className="bg-neutral-900 p-6 rounded-2xl border border-neutral-800 flex flex-col gap-4">
-377            <h2 className="text-xs font-bold text-neutral-400 uppercase">Channel Rack (16 Steps)</h2>
-378            <div className="grid grid-cols-16 gap-1.5">
-379              {steps.map((active, i) => (
-380                <button
-381                  key={i}
-382                  onClick={() => {
-383                    const copy = [...steps];
-384                    copy[i] = !copy[i];
-385                    setSteps(copy);
-386                  }}
-387                  className={\`h-12 rounded-lg font-bold text-xs transition \${active ? 'bg-orange-500 text-neutral-950' : 'bg-neutral-950 border border-neutral-800 text-neutral-500'}\`}
-388                >
-389                  {i + 1}
-390                </button>
-391              ))}
-392            </div>
-393          </main>
-394        </div>
-395      );
-396    }
-397
-398    ReactDOM.createRoot(document.getElementById('root')).render(<WebStudioApp />);
-399  </script>
-400</body>
-401</html>`;
-402
-403  const handleCopyHTML = () => {
-404    navigator.clipboard.writeText(standaloneHTMLCode);
-405    setCopiedHTML(true);
-406    setTimeout(() => setCopiedHTML(false), 2000);
-407  };
-408
-409  const selectedTrack = tracks.find((t) => t.id === selectedTrackId) || tracks[0];
-410
-411  return (
-412    <div className="min-h-screen w-full bg-neutral-950 text-neutral-100 flex flex-col font-sans select-none dir-rtl">
-413      {/* Top Header & Navigation Bar */}
-414      <Header
-415        isPlaying={isPlaying}
-416        bpm={bpm}
-417        onTogglePlay={handleTogglePlay}
-418        onStop={handleStop}
-419        onBpmChange={setBpm}
-420        activeTab={activeTab}
-421        onTabChange={setActiveTab}
-422        masterVolume={masterVolume}
-423        onMasterVolumeChange={handleMasterVolumeChange}
-424        isSongMode={isSongMode}
-425        onToggleMode={() => setIsSongMode(!isSongMode)}
-426        patternName={patterns[0]?.name || 'Pattern 1'}
-427        onOpenPricing={() => setShowPaymentModal(true)}
-428        onOpenHTMLExport={() => setShowHTMLModal(true)}
-429      />
-430
-431      {/* Main Website Content Area */}
-432      <main className="flex-1 p-4 max-w-7xl w-full mx-auto flex flex-col gap-4">
-433        {/* Spectrum Visualizer Bar */}
-434        <Visualizer />
-435
-436        {/* Tab 1: AI Studio */}
-437        {activeTab === 'ai_studio' && (
-438          <div className="flex flex-col gap-6">
-439            {/* Subscription Promo Banner */}
-440            <div className="bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs shadow-lg">
-441              <div className="flex items-center gap-3 text-amber-300 font-medium">
-442                <ShieldCheck className="w-5 h-5 text-amber-400 shrink-0" />
-443                <div>
-444                  <span className="font-bold text-sm block text-neutral-100">موقع Salh Alheib Klel Studio الموسيقي</span>
-445                  <span>احصل على إمكانية التوليد المباشر عبر الاشتراك: $20 شهرياً أو $47 سنوياً</span>
-446                </div>
-447              </div>
-448              <div className="flex items-center gap-2">
-449                <button
-450                  onClick={() => setShowHTMLModal(true)}
-451                  className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 font-bold rounded-xl transition text-xs flex items-center gap-1"
-452                >
-453                  <Code className="w-3.5 h-3.5 text-orange-400" />
-454                  <span>تصدير HTML</span>
-455                </button>
-456                <button
-457                  onClick={() => setShowPaymentModal(true)}
-458                  className="px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-neutral-950 font-extrabold rounded-xl transition shadow-md"
-459                >
-460                  اشترك الآن
-461                </button>
-462              </div>
-463            </div>
-464
-465            {/* AI Generator Grid */}
-466            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-467              {/* Music & Cover Generator Form */}
-468              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-5">
-469                <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-470                  <h2 className="font-extrabold text-sm text-orange-400 uppercase tracking-wider flex items-center gap-2">
-471                    <Sparkles className="w-4 h-4" />
-472                    استوديو التأليف الموسيقي والتوزيع
-473                  </h2>
-474                  <span className="text-[10px] font-mono text-neutral-500">Google Flow Music SDK Engine</span>
-475                </div>
-476
-477                {/* Sound Prompt */}
-478                <div className="flex flex-col gap-2">
-479                  <label className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
-480                    <Music className="w-4 h-4 text-orange-400" />
-481                    وصف النمط الموسيقي (Sound Prompt)
-482                  </label>
-483                  <textarea
-484                    value={prompt}
-485                    onChange={(e) => setPrompt(e.target.value)}
-486                    placeholder="صف الآلات، اللحن، والإيقاع..."
-487                    rows={2}
-488                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs text-neutral-200 focus:outline-none focus:border-orange-500/50 transition resize-none"
-489                  />
-490                  <div className="flex flex-wrap gap-1.5">
-491                    {[
-492                      'إيقاع لو-فاي هادئ مع بيانو شرقي وناي',
-493                      'موسيقى سينثوايف حماسية بموجات إلكترونية وقوة 808',
-494                      'معزوفة عود وأوركسترا سينمائية فخمة',
-495                      'أغنية بوب حيوية مع جيتار صوتي وإيقاع راقص',
-496                    ].map((preset, idx) => (
-497                      <button
-498                        key={idx}
-499                        onClick={() => setPrompt(preset)}
-500                        className="px-2.5 py-1 rounded-lg text-[11px] bg-neutral-950 hover:bg-neutral-800 text-neutral-400 border border-neutral-800 transition"
-501                      >
-502                        {preset}
-503                      </button>
-504                    ))}
-505                  </div>
-506                </div>
-507
-508                {/* AI Cover Art Section */}
-509                <div className="bg-neutral-950 border border-neutral-800/80 rounded-xl p-4 flex flex-col gap-3">
-510                  <span className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
-511                    <ImageIcon className="w-4 h-4 text-orange-400" />
-512                    توليد غلاف الألبوم بالذكاء الاصطناعي (AI Cover Art)
-513                  </span>
-514                  <div className="flex gap-2">
-515                    <input
-516                      type="text"
-517                      value={imagePrompt}
-518                      onChange={(e) => setImagePrompt(e.target.value)}
-519                      placeholder="وصف غلاف الألبوم..."
-520                      className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-orange-500/50"
-521                    />
-522                    <button
-523                      onClick={handleGenerateImage}
-524                      disabled={generatingImage}
-525                      className="px-3 py-1.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-neutral-950 font-bold text-xs rounded-lg disabled:opacity-50 transition flex items-center gap-1 shrink-0"
-526                    >
-527                      {generatingImage ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-528                      توليد الغلاف
-529                    </button>
-530                  </div>
-531                  {generatedImages.length > 0 && (
-532                    <div className="flex gap-2 overflow-x-auto pt-2">
-533                      {generatedImages.map((imgUrl, i) => (
-534                        <img
-535                          key={i}
-536                          src={imgUrl}
-537                          alt="Cover Art"
-538                          className="w-20 h-20 rounded-lg object-cover border border-neutral-800 shadow-md shrink-0 hover:scale-105 transition"
-539                        />
-540                      ))}
-541                    </div>
-542                  )}
-543                </div>
-544
-545                {/* AI Lyrics Section */}
-546                <div className="bg-neutral-950 border border-neutral-800/80 rounded-xl p-4 flex flex-col gap-3">
-547                  <div className="flex items-center justify-between">
-548                    <span className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
-549                      <FileText className="w-4 h-4 text-amber-400" />
-550                      كلمات الأغنية (Lyrics)
-551                    </span>
-552                    <button
-553                      onClick={() => setUseCustomLyrics(!useCustomLyrics)}
-554                      className={`text-[11px] font-bold px-2 py-0.5 rounded transition ${
-555                        useCustomLyrics ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-neutral-500'
-556                      }`}
-557                    >
-558                      {useCustomLyrics ? 'مفعل' : 'معزوفة بدون كلمات'}
-559                    </button>
-560                  </div>
-561
-562                  {useCustomLyrics && (
-563                    <div className="flex flex-col gap-2 pt-1">
-564                      <div className="flex gap-2">
-565                        <input
-566                          type="text"
-567                          value={lyricsPrompt}
-568                          onChange={(e) => setLyricsPrompt(e.target.value)}
-569                          placeholder="موضوع الأغنية للشاعر الذكي..."
-570                          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-amber-500/50"
-571                        />
-572                        <button
-573                          onClick={handleWriteLyrics}
-574                          disabled={writingLyrics}
-575                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-neutral-950 font-bold text-xs rounded-lg disabled:opacity-50 transition flex items-center gap-1"
-576                        >
-577                          {writingLyrics ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-578                          تأليف الكلمات
-579                        </button>
-580                      </div>
-581
-582                      <textarea
-583                        value={lyricsText}
-584                        onChange={(e) => setLyricsText(e.target.value)}
-585                        placeholder="أدخل كلمات الأغنية هنا..."
-586                        rows={3}
-587                        className="w-full bg-neutral-900 border border-neutral-800 rounded-lg p-2.5 text-xs text-neutral-200 focus:outline-none focus:border-amber-500/50 font-mono"
-588                      />
-589                    </div>
-590                  )}
-591                </div>
-592
-593                {/* Generate Button */}
-594                <button
-595                  onClick={handleGenerateSong}
-596                  disabled={loading || !!processingId}
-597                  className="w-full py-3.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-neutral-950 font-extrabold text-sm rounded-xl shadow-lg shadow-orange-500/20 disabled:opacity-50 transition flex items-center justify-center gap-2"
-598                >
-599                  {loading ? (
-600                    <>
-601                      <RefreshCw className="w-4 h-4 animate-spin text-neutral-950" />
-602                      <span>{statusMessage || 'جاري التوليد...'}</span>
-603                    </>
-604                  ) : (
-605                    <>
-606                      <Sparkles className="w-4 h-4 fill-current" />
-607                      <span>توليد الأغنية والموسيقى الآن</span>
-608                    </>
-609                  )}
-610                </button>
-611
-612                {error && (
-613                  <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs flex items-center gap-2">
-614                    <AlertCircle className="w-4 h-4 shrink-0" />
-615                    <span>{error}</span>
-616                  </div>
-617                )}
-618              </div>
-619
-620              {/* Generated Audio & Songs Display */}
-621              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4">
-622                <h2 className="text-xs font-bold text-orange-400 uppercase tracking-wider flex items-center gap-1.5 border-b border-neutral-800 pb-3">
-623                  <Disc className="w-4 h-4" />
-624                  الأغاني المولدة في الموقع ({generatedSongs.length})
-625                </h2>
-626
-627                {generatedSongs.length === 0 ? (
-628                  <div className="flex flex-col items-center justify-center h-64 text-neutral-500 text-xs gap-2 border border-dashed border-neutral-800 rounded-xl">
-629                    <Radio className="w-8 h-8 text-neutral-600 animate-pulse" />
-630                    <span>لا توجد أغانٍ مولدة بعد. اضغط على "توليد الأغنية" للبدء!</span>
-631                  </div>
-632                ) : (
-633                  <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1">
-634                    {generatedSongs.map((song) => {
-635                      const stems = stemsMap[song.id];
-636                      const isProcessing = processingId === song.id;
-637
-638                      return (
-639                        <div
-640                          key={song.id}
-641                          className="p-4 bg-neutral-950 border border-neutral-800/80 rounded-xl flex flex-col gap-3 shadow-md hover:border-neutral-700 transition"
-642                        >
-643                          <div className="flex items-center justify-between gap-3">
-644                            <div className="flex items-center gap-3">
-645                              {song.coverImageUrl ? (
-646                                <img src={song.coverImageUrl} alt="cover" className="w-12 h-12 rounded-lg object-cover border border-neutral-800" />
-647                              ) : (
-648                                <div className="w-12 h-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-orange-400">
-649                                  <Music className="w-6 h-6" />
-650                                </div>
-651                              )}
-652                              <div>
-653                                <h3 className="font-bold text-xs text-neutral-100">{song.title || 'أغنية جديدة'}</h3>
-654                                <span className="text-[10px] text-amber-400 font-mono">Salh Alheib Klel Studio</span>
-655                              </div>
-656                            </div>
-657
-658                            <audio src={song.audioUrl} controls className="h-8 max-w-[180px] sm:max-w-xs" />
-659                          </div>
-660
-661                          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-neutral-900">
-662                            <button
-663                              onClick={() => handleSplitStems(song.id)}
-664                              disabled={isProcessing}
-665                              className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-neutral-900 hover:bg-neutral-800 text-amber-400 border border-neutral-800 flex items-center gap-1 transition"
-666                            >
-667                              <Scissors className="w-3 h-3" />
-668                              <span>فصل الآلات (Stems)</span>
-669                            </button>
-670
-671                            <button
-672                              onClick={() => handleCoverSong(song.id)}
-673                              disabled={isProcessing}
-674                              className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-neutral-900 hover:bg-neutral-800 text-orange-400 border border-neutral-800 flex items-center gap-1 transition"
-675                            >
-676                              <Layers className="w-3 h-3" />
-677                              <span>إعادة توزيع (Cover)</span>
-678                            </button>
-679                          </div>
-680
-681                          {stems && (
-682                            <div className="grid grid-cols-2 gap-2 pt-2 bg-neutral-900/60 p-2.5 rounded-lg border border-neutral-800">
-683                              <div className="flex flex-col gap-1">
-684                                <span className="text-[10px] font-mono text-amber-400">Vocals (الصوت)</span>
-685                                <audio src={stems.vocals.audioUrl} controls className="h-6 w-full" />
-686                              </div>
-687                              <div className="flex flex-col gap-1">
-688                                <span className="text-[10px] font-mono text-amber-400">Drums (الإيقاع)</span>
-689                                <audio src={stems.drums.audioUrl} controls className="h-6 w-full" />
-690                              </div>
-691                              <div className="flex flex-col gap-1">
-692                                <span className="text-[10px] font-mono text-amber-400">Bass (البيس)</span>
-693                                <audio src={stems.bass.audioUrl} controls className="h-6 w-full" />
-694                              </div>
-695                              <div className="flex flex-col gap-1">
-696                                <span className="text-[10px] font-mono text-amber-400">Other (الآلات)</span>
-697                                <audio src={stems.other.audioUrl} controls className="h-6 w-full" />
-698                              </div>
-699                            </div>
-700                          )}
-701                        </div>
-702                      );
-703                    })}
-704                  </div>
-705                )}
-706              </div>
-707            </div>
-708          </div>
-709        )}
-710
-711        {/* Tab 2: DAW Sequencer */}
-712        {activeTab === 'sequencer' && (
-713          <div className="h-[550px]">
-714            <StepSequencer
-715              tracks={tracks}
-716              currentStep={currentStep}
-717              isPlaying={isPlaying}
-718              onToggleStep={handleToggleStep}
-719              onUpdateTrack={handleUpdateTrack}
-720              selectedTrackId={selectedTrackId}
-721              onSelectTrack={setSelectedTrackId}
-722            />
-723          </div>
-724        )}
-725
-726        {/* Tab 3: DAW Playlist */}
-727        {activeTab === 'playlist' && (
-728          <div className="h-[550px]">
-729            <Playlist
-730              patterns={patterns}
-731              clips={playlistClips}
-732              onAddClip={(patternId, trackIndex, startBar) => {
-733                setPlaylistClips((prev) => [
-734                  ...prev,
-735                  { id: `clip_${Date.now()}`, patternId, trackIndex, startBar, lengthBars: 1 },
-736                ]);
-737              }}
-738              onRemoveClip={(clipId) => {
-739                setPlaylistClips((prev) => prev.filter((c) => c.id !== clipId));
-740              }}
-741              selectedPatternId={patterns[0]?.id || 'pat_1'}
-742            />
-743          </div>
-744        )}
-745
-746        {/* Tab 4: DAW Mixer */}
-747        {activeTab === 'mixer' && (
-748          <div className="h-[550px]">
-749            <Mixer
-750              tracks={tracks}
-751              onUpdateTrack={handleUpdateTrack}
-752              selectedTrackId={selectedTrackId}
-753              onSelectTrack={setSelectedTrackId}
-754              trackFX={trackFX}
-755              onUpdateFX={handleUpdateFX}
-756            />
-757          </div>
-758        )}
-759
-760        {/* Tab 5: DAW Synth Engine */}
-761        {activeTab === 'synth' && (
-762          <div className="h-[550px]">
-763            <SynthPanel track={selectedTrack} onUpdateTrack={handleUpdateTrack} />
-764          </div>
-765        )}
-766      </main>
-767
-768      {/* HTML Standalone Code Modal */}
-769      {showHTMLModal && (
-770        <div className="fixed inset-0 bg-neutral-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
-771          <div className="w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4 relative">
-772            <button
-773              onClick={() => setShowHTMLModal(false)}
-774              className="absolute top-4 left-4 text-neutral-400 hover:text-neutral-100 text-xs font-mono font-bold"
-775            >
-776              ✕ إغلاق
-777            </button>
-778
-779            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
-780              <h3 className="text-sm font-bold text-orange-400 flex items-center gap-2">
-781                <Code className="w-4 h-4" />
-782                كود صفحة HTML كامل لموقعك الموسيقي (Standalone index.html)
-783              </h3>
-784              <button
-785                onClick={handleCopyHTML}
-786                className="px-3 py-1 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-neutral-950 font-extrabold text-xs rounded-lg transition flex items-center gap-1"
-787              >
-788                {copiedHTML ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-789                <span>{copiedHTML ? 'تم النسخ!' : 'نسخ كود HTML'}</span>
-790              </button>
-791            </div>
-792
-793            <textarea
-794              readOnly
-795              value={standaloneHTMLCode}
-796              rows={12}
-797              className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 font-mono text-[11px] text-amber-300 focus:outline-none resize-none leading-relaxed"
-798            />
-799            <p className="text-[11px] text-neutral-400">
-800              يمكنك استخدام هذا الكود في أي استضافة أو حفظه كملف <code className="text-orange-400">index.html</code> لتنفيذ الموقع مباشرة على المتصفح!
-801            </p>
-802          </div>
-803        </div>
-804      )}
-805
-806      {/* Subscription Checkout Modal */}
-807      {showPaymentModal && (
-808        <div className="fixed inset-0 bg-neutral-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
-809          <div className="w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-5 relative">
-810            <button
-811              onClick={() => setShowPaymentModal(false)}
-812              className="absolute top-4 left-4 text-neutral-400 hover:text-neutral-100 text-xs font-mono font-bold"
-813            >
-814              ✕ إغلاق
-815            </button>
-816
-817            <div className="text-center pt-2">
-818              <h3 className="text-lg font-black text-neutral-100">باقات الاشتراكات الدائمة</h3>
-819              <p className="text-xs text-neutral-400 mt-1">اشترك الآن للحصول على كافة مزايا الموقع والتوليد غير المحدود</p>
-820            </div>
-821
-822            <div className="grid grid-cols-2 gap-3">
-823              <div
-824                onClick={() => setPlan('monthly')}
-825                className={`p-4 rounded-xl border cursor-pointer transition flex flex-col items-center gap-2 text-center ${
-826                  plan === 'monthly' ? 'bg-orange-500/10 border-orange-500 text-orange-300' : 'bg-neutral-950 border-neutral-800 text-neutral-400'
-827                }`}
-828              >
-829                <span className="text-xs font-bold uppercase">اشتراك شهري</span>
-830                <span className="text-2xl font-black text-neutral-100">$20</span>
-831                <span className="text-[10px] text-neutral-500">شهرياً</span>
-832              </div>
-833
-834              <div
-835                onClick={() => setPlan('yearly')}
-836                className={`p-4 rounded-xl border cursor-pointer transition flex flex-col items-center gap-2 text-center relative ${
-837                  plan === 'yearly' ? 'bg-amber-500/10 border-amber-500 text-amber-300' : 'bg-neutral-950 border-neutral-800 text-neutral-400'
-838                }`}
-839              >
-840                <span className="absolute -top-2 bg-amber-500 text-neutral-950 text-[9px] font-extrabold px-2 py-0.5 rounded-full">
-841                  الأوفر (خصم 80%)
-842                </span>
-843                <span className="text-xs font-bold uppercase">اشتراك سنوي</span>
-844                <span className="text-2xl font-black text-neutral-100">$47</span>
-845                <span className="text-[10px] text-neutral-500">لكامل السنة</span>
-846              </div>
-847            </div>
-848
-849            <div className="bg-neutral-950 border border-neutral-800/80 rounded-xl p-3 flex flex-col gap-1.5 text-center">
-850              <span className="text-[11px] font-mono text-neutral-400">حساب الدفع عبر PayPal:</span>
-851              <span className="text-xs font-mono font-bold text-amber-400 select-all">aalhee34@gmail.com</span>
-852            </div>
-853
-854            <a
-855              href={`https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=aalhee34@gmail.com&item_name=${encodeURIComponent(
-856                plan === 'monthly' ? 'AI Music Studio Monthly Subscription ($20)' : 'AI Music Studio Yearly Subscription ($47)'
-857              )}&amount=${plan === 'monthly' ? '20.00' : '47.00'}&currency_code=USD`}
-858              target="_blank"
-859              rel="noopener noreferrer"
-860              className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-neutral-950 font-extrabold text-xs rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-center"
-861            >
-862              <span>إتمام الدفع عبر PayPal ({plan === 'monthly' ? '$20' : '$47'})</span>
-863            </a>
-864          </div>
-865        </div>
-866      )}
-867    </div>
-868  );
-869}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Salh Alheib Klel Studio - Web DAW & AI Studio</title>
+
+  <!-- Tailwind CSS للتصميم -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    body {
+      background-color: #0a0a0a;
+      color: #f5f5f5;
+      font-family: system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+    .active-step {
+      background-color: #f97316 !important;
+      color: #000 !important;
+      box-shadow: 0 0 10px rgba(249, 115, 22, 0.5);
+    }
+    .current-step {
+      border: 2px solid #ffffff !important;
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between">
+
+  <!-- 1. الشريط العلوي Header -->
+  <header className="bg-neutral-900 border-b border-neutral-800 p-4 flex flex-wrap items-center justify-between gap-4 shadow-xl">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-orange-500 to-amber-500 flex items-center justify-center font-black text-neutral-950 text-xl shadow-lg">
+        🎼
+      </div>
+      <div>
+        <h1 class="text-base font-black text-neutral-100 tracking-wider">Salh Alheib Klel Studio</h1>
+        <span class="text-[10px] text-orange-400 font-mono block -mt-1">Web DAW & AI Studio</span>
+      </div>
+    </div>
+
+    <!-- أزرار التشغيل والـ BPM -->
+    <div class="flex items-center gap-3">
+      <button id="playBtn" onclick="togglePlay()" class="px-6 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-neutral-950 font-extrabold text-xs rounded-xl shadow-lg hover:brightness-110 transition">
+        ▶ تشغيل الإيقاع
+      </button>
+
+      <div class="flex items-center gap-2 bg-neutral-950 px-3 py-1.5 rounded-xl border border-neutral-800">
+        <span class="text-xs font-mono font-bold text-neutral-400">BPM</span>
+        <input type="number" id="bpmInput" value="120" min="60" max="200" onchange="updateBpm(this.value)" class="w-12 bg-transparent text-center font-mono font-bold text-orange-400 focus:outline-none" />
+      </div>
+    </div>
+
+    <!-- الأقسام -->
+    <nav class="flex items-center gap-1 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+      <button onclick="switchTab('ai')" id="tab-ai" class="px-4 py-1.5 rounded-lg text-xs font-bold bg-gradient-to-r from-orange-500 to-amber-500 text-neutral-950">استوديو الذكاء الاصطناعي</button>
+      <button onclick="switchTab('rack')" id="tab-rack" class="px-4 py-1.5 rounded-lg text-xs font-bold text-neutral-400 hover:text-neutral-200">الموزع (Sequencer)</button>
+      <button onclick="switchTab('mixer')" id="tab-mixer" class="px-4 py-1.5 rounded-lg text-xs font-bold text-neutral-400 hover:text-neutral-200">الميكسر (Mixer)</button>
+    </nav>
+
+    <!-- أزرار الاشتراكات -->
+    <div class="flex items-center gap-2">
+      <button onclick="openModal('paymentModal')" class="px-4 py-1.5 bg-amber-500 text-neutral-950 text-xs font-extrabold rounded-xl shadow-md hover:bg-amber-400 transition">
+        الاشتراكات
+      </button>
+    </div>
+  </header>
+
+  <!-- 2. المحتوى الرئيسي -->
+  <main class="flex-1 p-6 max-w-7xl w-full mx-auto flex flex-col gap-6">
+
+    <!-- شاشة رسم الطيف الصوتي Visualizer -->
+    <div class="w-full h-16 bg-neutral-950 rounded-xl border border-neutral-800 overflow-hidden relative">
+      <canvas id="spectrumCanvas" width="800" height="64" class="w-full h-full block"></canvas>
+      <span class="absolute top-1 left-2 text-[9px] font-mono text-orange-400 font-bold uppercase">Master Visualizer</span>
+    </div>
+
+    <!-- قسم الذكاء الاصطناعي AI Studio -->
+    <div id="section-ai" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-sm font-extrabold text-orange-400 border-b border-neutral-800 pb-2">توليد الموسيقى والأغاني بالذكاء الاصطناعي</h2>
+        
+        <label class="text-xs font-bold text-neutral-300">وصف النمط الموسيقي (Sound Prompt)</label>
+        <textarea id="aiPrompt" rows="3" class="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs text-neutral-200 focus:outline-none focus:border-orange-500">إيقاع لو-فاي هادئ مع بيانو شرقي وناي</textarea>
+
+        <label class="text-xs font-bold text-neutral-300">كلمات الأغنية (Lyrics)</label>
+        <textarea id="aiLyrics" rows="3" class="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs text-neutral-200 focus:outline-none focus:border-amber-500 font-mono">أيها الأمل البعيد، أشرق في قلبي من جديد...</textarea>
+
+        <button onclick="generateAISong()" id="genBtn" class="w-full py-3.5 bg-gradient-to-r from-orange-500 to-amber-500 text-neutral-950 font-extrabold text-xs rounded-xl shadow-lg hover:brightness-110 transition">
+          توليد الأغنية والموسيقى الآن
+        </button>
+      </div>
+
+      <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-sm font-extrabold text-orange-400 border-b border-neutral-800 pb-2">الأغاني المولدة</h2>
+        <div id="songsList" class="flex flex-col gap-3 max-h-[350px] overflow-y-auto">
+          <div class="p-4 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center justify-between">
+            <div>
+              <h3 class="text-xs font-bold text-neutral-100">مقطوعة الفجر الشرقي</h3>
+              <span class="text-[10px] text-neutral-500">Salh Alheib Klel Studio</span>
+            </div>
+            <button onclick="playAISample()" class="px-3 py-1 bg-orange-500 text-neutral-950 text-xs font-bold rounded-lg">استماع</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- قسم الموزع الإيقاعي Channel Rack -->
+    <div id="section-rack" class="hidden bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex-col gap-4">
+      <h2 class="text-sm font-extrabold text-orange-400 border-b border-neutral-800 pb-2">Channel Rack (16-Step Sequencer)</h2>
+      <div id="sequencerGrid" class="flex flex-col gap-3"></div>
+    </div>
+
+    <!-- قسم الميكسر Mixer -->
+    <div id="section-mixer" class="hidden bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex-col gap-4">
+      <h2 class="text-sm font-extrabold text-orange-400 border-b border-neutral-800 pb-2">Studio Mixer Console</h2>
+      <div class="grid grid-cols-3 gap-4 text-center">
+        <div class="bg-neutral-950 p-4 rounded-xl border border-neutral-800 flex flex-col items-center gap-2">
+          <span class="text-xs font-bold text-orange-400">Kick 808</span>
+          <input type="range" min="0" max="1" step="0.05" value="0.9" onchange="audioEngine.setKickVol(this.value)" class="w-full accent-orange-500" />
+        </div>
+        <div class="bg-neutral-950 p-4 rounded-xl border border-neutral-800 flex flex-col items-center gap-2">
+          <span class="text-xs font-bold text-amber-400">Snare Clap</span>
+          <input type="range" min="0" max="1" step="0.05" value="0.8" onchange="audioEngine.setSnareVol(this.value)" class="w-full accent-amber-500" />
+        </div>
+        <div class="bg-neutral-950 p-4 rounded-xl border border-neutral-800 flex flex-col items-center gap-2">
+          <span class="text-xs font-bold text-yellow-400">HiHat Trap</span>
+          <input type="range" min="0" max="1" step="0.05" value="0.7" onchange="audioEngine.setHiHatVol(this.value)" class="w-full accent-yellow-500" />
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- نافذة الاشتراكات PayPal Modal -->
+  <div id="paymentModal" class="hidden fixed inset-0 bg-neutral-950/80 backdrop-blur-md z-50 items-center justify-center p-4">
+    <div class="w-full max-w-sm bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4 text-center relative">
+      <button onclick="closeModal('paymentModal')" class="absolute top-4 left-4 text-neutral-400 text-xs font-bold">✕ إغلاق</button>
+      <h3 class="text-base font-black text-neutral-100">باقات اشتراك المولد</h3>
+      <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-800 text-xs font-mono text-amber-400">
+        PayPal: aalhee34@gmail.com
+      </div>
+      <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=aalhee34@gmail.com&item_name=AI%20Music%20Studio%20Yearly&amount=47.00&currency_code=USD" target="_blank" class="py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-neutral-950 font-extrabold text-xs rounded-xl shadow-lg block">
+        دفع الاشتراك السنوي ($47)
+      </a>
+    </div>
+  </div>
+
+  <!-- 3. البرمجة بالأصوات Pure Web Audio API Engine -->
+  <script>
+    class WebAudioEngine {
+      constructor() {
+        this.ctx = null;
+        this.masterGain = null;
+        this.analyser = null;
+        this.kickVol = 0.9;
+        this.snareVol = 0.8;
+        this.hiHatVol = 0.7;
+      }
+
+      init() {
+        if (this.ctx) return;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioCtx();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 0.8;
+
+        this.analyser = this.ctx.createAnalyser();
+        this.analyser.fftSize = 256;
+
+        this.masterGain.connect(this.analyser);
+        this.analyser.connect(this.ctx.destination);
+      }
+
+      resume() {
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+      }
+
+      setKickVol(v) { this.kickVol = Number(v); }
+      setSnareVol(v) { this.snareVol = Number(v); }
+      setHiHatVol(v) { this.hiHatVol = Number(v); }
+
+      playKick() {
+        this.init(); this.resume();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(140, now);
+        osc.frequency.exponentialRampToValueAtTime(38, now + 0.08);
+
+        gain.gain.setValueAtTime(this.kickVol * 1.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start(now);
+        osc.stop(now + 0.35);
+      }
+
+      playSnare() {
+        this.init(); this.resume();
+        const now = this.ctx.currentTime;
+        const bufferSize = this.ctx.sampleRate * 0.15;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 1000;
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(this.snareVol, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        noise.start(now);
+        noise.stop(now + 0.15);
+      }
+
+      playHiHat() {
+        this.init(); this.resume();
+        const now = this.ctx.currentTime;
+        const bufferSize = this.ctx.sampleRate * 0.05;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 7000;
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(this.hiHatVol, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        noise.start(now);
+        noise.stop(now + 0.05);
+      }
+    }
+
+    const audioEngine = new WebAudioEngine();
+
+    // حالة الموزع الإيقاعي
+    let isPlaying = false;
+    let bpm = 120;
+    let currentStep = 0;
+    let timerId = null;
+
+    const tracks = [
+      { id: 'kick', name: 'Kick 808', color: '#f97316', steps: [true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false] },
+      { id: 'snare', name: 'Snare Clap', color: '#f59e0b', steps: [false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false] },
+      { id: 'hihat', name: 'HiHat Trap', color: '#eab308', steps: [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true] }
+    ];
+
+    // بناء شبكة الموزع الإيقاعي
+    function renderSequencer() {
+      const grid = document.getElementById('sequencerGrid');
+      grid.innerHTML = '';
+
+      tracks.forEach((track) => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-3 p-3 bg-neutral-950 border border-neutral-800 rounded-xl';
+
+        const title = document.createElement('span');
+        title.className = 'text-xs font-bold w-24 truncate';
+        title.style.color = track.color;
+        title.innerText = track.name;
+        row.appendChild(title);
+
+        const stepsDiv = document.createElement('div');
+        stepsDiv.className = 'grid grid-cols-16 gap-1 flex-1';
+
+        track.steps.forEach((active, idx) => {
+          const btn = document.createElement('button');
+          btn.id = `step-${track.id}-${idx}`;
+          btn.className = `h-10 rounded-lg font-mono text-[10px] font-bold transition ${active ? 'active-step' : 'bg-neutral-900 border border-neutral-800 text-neutral-600'}`;
+          btn.innerText = idx + 1;
+          btn.onclick = () => {
+            track.steps[idx] = !track.steps[idx];
+            renderSequencer();
+          };
+          stepsDiv.appendChild(btn);
+        });
+
+        row.appendChild(stepsDiv);
+        grid.appendChild(row);
+      });
+    }
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      const playBtn = document.getElementById('playBtn');
+      if (isPlaying) {
+        playBtn.innerText = '⏹ إيقاف التشغيل';
+        const intervalMs = (60 / bpm / 4) * 1000;
+        timerId = setInterval(runStep, intervalMs);
+      } else {
+        playBtn.innerText = '▶ تشغيل الإيقاع';
+        clearInterval(timerId);
+        currentStep = 0;
+      }
+    }
+
+    function runStep() {
+      tracks.forEach((track) => {
+        if (track.steps[currentStep]) {
+          if (track.id === 'kick') audioEngine.playKick();
+          if (track.id === 'snare') audioEngine.playSnare();
+          if (track.id === 'hihat') audioEngine.playHiHat();
+        }
+      });
+
+      // التظليل المباشر للخطوة الحالية
+      document.querySelectorAll('.current-step').forEach(e => e.classList.remove('current-step'));
+      tracks.forEach((track) => {
+        const el = document.getElementById(`step-${track.id}-${currentStep}`);
+        if (el) el.classList.add('current-step');
+      });
+
+      currentStep = (currentStep + 1) % 16;
+    }
+
+    function updateBpm(val) {
+      bpm = Number(val);
+      if (isPlaying) {
+        clearInterval(timerId);
+        timerId = setInterval(runStep, (60 / bpm / 4) * 1000);
+      }
+    }
+
+    function switchTab(tab) {
+      document.getElementById('section-ai').classList.add('hidden');
+      document.getElementById('section-rack').classList.add('hidden');
+      document.getElementById('section-mixer').classList.add('hidden');
+
+      document.getElementById(`section-${tab}`).classList.remove('hidden');
+      if (tab === 'rack') document.getElementById(`section-${tab}`).classList.add('flex');
+    }
+
+    function generateAISong() {
+      const btn = document.getElementById('genBtn');
+      btn.innerText = 'جاري التوليد بالمحرك الذكي...';
+      btn.disabled = true;
+
+      setTimeout(() => {
+        const prompt = document.getElementById('aiPrompt').value;
+        const list = document.getElementById('songsList');
+        const item = document.createElement('div');
+        item.className = 'p-4 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center justify-between';
+        item.innerHTML = `
+          <div>
+            <h3 class="text-xs font-bold text-neutral-100">${prompt}</h3>
+            <span class="text-[10px] text-orange-400">Salh Alheib Klel Studio</span>
+          </div>
+          <button onclick="playAISample()" class="px-3 py-1 bg-orange-500 text-neutral-950 text-xs font-bold rounded-lg">استماع</button>
+        `;
+        list.prepend(item);
+        btn.innerText = 'توليد الأغنية والموسيقى الآن';
+        btn.disabled = false;
+        audioEngine.playKick();
+      }, 1200);
+    }
+
+    function playAISample() {
+      audioEngine.playKick();
+      setTimeout(() => audioEngine.playSnare(), 250);
+      setTimeout(() => audioEngine.playHiHat(), 500);
+    }
+
+    function openModal(id) { document.getElementById(id).classList.remove('hidden'); document.getElementById(id).classList.add('flex'); }
+    function closeModal(id) { document.getElementById(id).classList.add('hidden'); document.getElementById(id).classList.remove('flex'); }
+
+    // رسم رسم البياني للصوت Visualizer
+    function startVisualizer() {
+      const canvas = document.getElementById('spectrumCanvas');
+      const ctx = canvas.getContext('2d');
+
+      function draw() {
+        requestAnimationFrame(draw);
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (audioEngine.analyser) {
+          const bufferLength = audioEngine.analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+          audioEngine.analyser.getByteFrequencyData(dataArray);
+
+          const barWidth = (canvas.width / bufferLength) * 2;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            const barHeight = (dataArray[i] / 255) * canvas.height;
+            ctx.fillStyle = '#f97316';
+            ctx.fillRect(x, canvas.height - barHeight, barWidth - 1, barHeight);
+            x += barWidth;
+          }
+        }
+      }
+      draw();
+    }
+
+    window.onload = () => {
+      renderSequencer();
+      startVisualizer();
+    };
+  </script>
+</body>
+</html>
